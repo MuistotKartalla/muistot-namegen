@@ -1,11 +1,11 @@
-FROM python:3.9-alpine
+FROM python:3.7-alpine
 RUN apk add sqlite
 WORKDIR /opt/namegen
 
 COPY ./setup.py .
 COPY ./README.md .
 COPY ./src ./src
-COPY ./wordlist.txt .
+COPY ./wordlist.csv .
 RUN pip install .[dev]
 
 COPY ./db.sql .

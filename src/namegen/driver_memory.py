@@ -1,95 +1,92 @@
 import base64
+import collections
 import gzip
-import hashlib
 import json
-import random
-from collections import deque
+import typing
 
-LCG_MIN = 0
-LCG_MAX = 9999
-
-
-def generate_next(previous: int) -> int:
-    return (21 * previous + 1) % 10_000
+from .driver import Driver
+from .utils import hash_file, read_initial_values, generate_next, get_random, get_state_file, get_word_file, lcm
 
 
-START = deque()
-END = deque()
-COUNTS = deque()
+class Item:
+    __slots__ = ['start', 'end', 'value']
+    start: str
+    end: str
+    value: int
 
-STATE_FILE = 'namegen-state'
-WORD_FILE = 'wordlist.txt'
+    def __init__(self, start: str, end: str, value: int):
+        self.start = start
+        self.end = end
+        self.value = value
 
+    def next(self):
+        self.value = generate_next(self.value)
+        return self
 
-def to_json() -> str:
-    return base64.b64encode(gzip.compress(json.dumps(dict(
-        start=list(START),
-        end=list(END),
-        counts=list(COUNTS),
-    )).encode('utf-8'))).decode('ascii')
+    def to_dict(self):
+        return {
+            'start': self.start,
+            'end': self.end,
+            'value': self.value
+        }
 
-
-def hashit() -> str:
-    with open(WORD_FILE, 'rb') as wf:
-        return base64.b64encode(
-            hashlib.sha256(
-                wf.read(),
-                usedforsecurity=False
-            ).digest()
-        ).decode('ascii')
-
-
-def load_state():
-    try:
-        with open(STATE_FILE, 'r') as f:
-            file_hash = f.readline().strip()
-            if file_hash == hashit():
-                START.clear()
-                END.clear()
-                COUNTS.clear()
-                data = json.loads(gzip.decompress(base64.b64decode(f.readline().strip().encode('ascii'))))
-                START.extend(data['start'])
-                END.extend(data['end'])
-                COUNTS.extend(data['counts'])
-                return True
-    except FileNotFoundError:
-        pass
-    return False
+    @staticmethod
+    def from_dict(item: typing.Dict) -> 'Item':
+        return Item(start=item['start'], end=item['end'], value=int(item['value']))
 
 
-def stop():
-    with open(STATE_FILE, 'w') as f:
-        f.write(hashit())
-        f.write('\n')
-        f.write(to_json())
+class MemoryDriver(Driver):
+    items: typing.Deque[Item] = collections.deque()
+
+    def to_json(self) -> str:
+        return base64.b64encode(gzip.compress(json.dumps(dict(
+            items=list(map(lambda i: i.to_dict(), self.items))
+        )).encode('utf-8'))).decode('ascii')
+
+    def from_json(self, f: typing.TextIO):
+        self.items.clear()
+        self.items.extend(map(
+            lambda o: Item.from_dict(o),
+            json.loads(gzip.decompress(base64.b64decode(f.readline().strip().encode('ascii'))))['items']
+        ))
+
+    def load_state(self):
+        try:
+            with open(get_state_file(), 'r') as f:
+                file_hash = f.readline().strip()
+                if file_hash == hash_file(get_word_file()):
+                    self.from_json(f)
+                    return True
+        except FileNotFoundError:
+            pass
+        return False
+
+    def start(self):
+        if not self.load_state():
+            starts, ends = read_initial_values()
+            i = 0
+            j = 0
+            cnt = 0
+            max_s = len(starts) - 1
+            max_e = len(ends) - 1
+            while cnt != lcm(max_s, max_e):
+                self.items.append(Item(start=starts[i], end=ends[j], value=get_random()))
+                i = i + 1 if i < max_s else 0
+                j = j + 1 if j < max_e else 0
+                cnt += 1
+
+    def stop(self):
+        with open(get_state_file(), 'w') as f:
+            f.write(hash_file(get_word_file()))
+            f.write('\n')
+            f.write(self.to_json())
+
+    def generate(self):
+        item = self.items.popleft()
+        try:
+            return f'{item.start}{item.end}#{item.value:04d}'
+        finally:
+            self.items.append(item.next())
 
 
-def start():
-    if not load_state():
-        import math
-        with open('wordlist.txt', 'r') as f:
-            data = f.read().splitlines()
-            split = data.index('#split')
-            START.extend(set(w[0].upper() + w[1:] for w in data[:split]))
-            END.extend(set(w[0].upper() + w[1:] for w in data[split + 1:]))
-            COUNTS.extend(random.randint(LCG_MIN, LCG_MAX) for _ in range(0, math.lcm(len(START), len(END))))
-
-
-def generate_name():
-    start = START.popleft()
-    end = END.popleft()
-    cnt = COUNTS.popleft()
-    try:
-        return f'{start}{end}', cnt
-    finally:
-        START.append(start)
-        END.append(end)
-        COUNTS.append(generate_next(cnt))
-
-
-def generate():
-    name, count = generate_name()
-    return f'{name}#{count:04d}'
-
-
-__all__ = ['generate', 'start', 'stop']
+__all__ = ['MemoryDriver']

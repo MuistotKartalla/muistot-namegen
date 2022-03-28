@@ -1,0 +1,1 @@
+uvicorn --reload gentest:app
